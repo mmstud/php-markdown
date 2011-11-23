@@ -1,20 +1,29 @@
 <?php
-#
-# Markdown Extra  -  A text-to-HTML conversion tool for web writers
-#
-# PHP Markdown & Extra
-# Copyright (c) 2004-2009 Michel Fortin  
-# <http://michelf.com/projects/php-markdown/>
-#
-# Original Markdown
-# Copyright (c) 2004-2006 John Gruber  
-# <http://daringfireball.net/projects/markdown/>
-#
 
+/**
+ * File: inc/modules/amindex/classes/Markdown.php
+ *
+ * A text-to-HTML conversion tool for web writers.
+ *
+ * Modified to support alphabetic lists and Google App Engine
+ * which had a minor struggle to get lists regexp working like normal PHP
+ *
+ * PHP Markdown & Extra
+ * Copyright (c) 2004-2009 Michel Fortin  
+ * <http://michelf.com/projects/php-markdown/>
+ * 
+ * Original Markdown
+ * Copyright (c) 2004-2006 John Gruber  
+ * <http://daringfireball.net/projects/markdown/>
+ *
+ * @author Marko Manninen <mmstud@gmail.com>
+ * @copyright Copyright (c) 2011 Marko Manninen
+ */
 
 define( 'MARKDOWN_VERSION',  "1.0.1n" ); # Sat 10 Oct 2009
 define( 'MARKDOWNEXTRA_VERSION',  "1.2.4" ); # Sat 10 Oct 2009
 
+if (!isset($is_google_app_engine)) $is_google_app_engine = FALSE;
 
 #
 # Global default settings:
@@ -57,9 +66,8 @@ function Markdown($text) {
 	static $parser;
 	if (!isset($parser)) {
 		$parser_class = MARKDOWN_PARSER_CLASS;
-		$parser = new $parser_class;
+		eval("\$parser = new $parser_class;");
 	}
-
 	# Transform text using parser.
 	return $parser->transform($text);
 }
@@ -317,7 +325,7 @@ class Markdown_Parser {
 		$text = $this->detab($text);
 
 		# Turn block-level HTML blocks into hash entries
-		$text = $this->hashHTMLBlocks($text);
+		$text = $this->no_markup ? $this->hashHTMLBlocks($text) : $text;
 
 		# Strip any lines consisting only of spaces and tabs.
 		# This makes subsequent regexen easier to write, because we can
@@ -387,7 +395,7 @@ class Markdown_Parser {
 
 
 	function hashHTMLBlocks($text) {
-		if ($this->no_markup)  return $text;
+		if ($this->no_markup) return $text;
 
 		$less_than_tab = $this->tab_width - 1;
 
@@ -594,9 +602,10 @@ class Markdown_Parser {
 	# useful when HTML blocks are known to be already hashed, like in the first
 	# whole-document pass.
 	#
-		foreach ($this->block_gamut as $method => $priority) {
-			$text = $this->$method($text);
-		}
+
+			foreach ($this->block_gamut as $method => $priority) {
+				$text = $this->$method($text);
+			}
 		
 		# Finally form paragraph and restore hashed blocks.
 		$text = $this->formParagraphs($text);
@@ -951,14 +960,19 @@ class Markdown_Parser {
 		# Re-usable patterns to match list item bullets and number markers:
 		$marker_ul_re  = '[*+-]';
 		$marker_ol_re  = '\d+[.]';
-		$marker_any_re = "(?:$marker_ul_re|$marker_ol_re)";
+		$marker_ol_re2  = '[a-z]+[.]';
+		$marker_any_re = "(?:$marker_ul_re|$marker_ol_re|$marker_ol_re2)";
 
-		$markers_relist = array(
-			$marker_ul_re => $marker_ol_re,
-			$marker_ol_re => $marker_ul_re,
-			);
+		$markers_relist = array();
+		$markers_relist[] = array($marker_ul_re, $marker_ol_re);
+		$markers_relist[] = array($marker_ol_re, $marker_ul_re);
+		$markers_relist[] = array($marker_ol_re2, $marker_ul_re);
+		$markers_relist[] = array($marker_ol_re2, $marker_ol_re);
+		$markers_relist[] = array($marker_ol_re, $marker_ol_re2);
+		$markers_relist[] = array($marker_ul_re, $marker_ol_re2);
 
-		foreach ($markers_relist as $marker_re => $other_marker_re) {
+		foreach ($markers_relist as $res) {
+			list($marker_re, $other_marker_re) = $res;
 			# Re-usable pattern to match any entirel ul or ol list:
 			$whole_list_re = '
 				(								# $1 = whole list
@@ -1009,20 +1023,28 @@ class Markdown_Parser {
 		return $text;
 	}
 	function _doLists_callback($matches) {
+		global $is_google_app_engine;
 		# Re-usable patterns to match list item bullets and number markers:
 		$marker_ul_re  = '[*+-]';
 		$marker_ol_re  = '\d+[.]';
-		$marker_any_re = "(?:$marker_ul_re|$marker_ol_re)";
-		
-		$list = $matches[1];
-		$list_type = preg_match("/$marker_ul_re/", $matches[4]) ? "ul" : "ol";
-		
-		$marker_any_re = ( $list_type == "ul" ? $marker_ul_re : $marker_ol_re );
+		$marker_ol_re2  = '[a-z]+[.]';
+		$marker_any_re = "(?:$marker_ul_re|$marker_ol_re|$marker_ol_re2)";
+
+		$list = (isset($matches[1])?$matches[1]:'');
+		if ($is_google_app_engine) {
+			$c = $matches[2];
+		} else {
+			$c = $matches[4];
+		}
+		$list_type = preg_match("/$marker_ul_re/", $c) ? "ul" : "ol";
+		if ($list_type == 'ol') {
+			$list_type = preg_match("/$marker_ol_re2/", $c) ? 'ol style="list-style-type: lower-latin;"' : 'ol';
+		}
+		$marker_any_re = ($list_type == "ul" ? $marker_ul_re : ($list_type == "ol" ? $marker_ol_re : $marker_ol_re2));
 		
 		$list .= "\n";
 		$result = $this->processListItems($list, $marker_any_re);
-		
-		$result = $this->hashBlock("<$list_type>\n" . $result . "</$list_type>");
+		$result = $this->hashBlock("<$list_type>\n" . $result . "</".str_replace(' style="list-style-type: lower-latin;"', '', $list_type).">");
 		return "\n". $result ."\n\n";
 	}
 
@@ -1063,26 +1085,33 @@ class Markdown_Parser {
 			(\n)?							# leading line = $1
 			(^[ ]*)							# leading whitespace = $2
 			('.$marker_any_re.'				# list marker and space = $3
-				(?:[ ]+|(?=\n))	# space only required if item is not empty
+				(?:[ ]+|(?=\n))				# space only required if item is not empty
 			)
-			((?s:.*?))						# list item text   = $4
+			((?s:.*?))						# list item text = $4
 			(?:(\n+(?=\n))|\n)				# tailing blank line = $5
 			(?= \n* (\z | \2 ('.$marker_any_re.') (?:[ ]+|(?=\n))))
 			}xm',
 			array(&$this, '_processListItems_callback'), $list_str);
-
 		$this->list_level--;
 		return $list_str;
 	}
 	function _processListItems_callback($matches) {
-		$item = $matches[4];
-		$leading_line =& $matches[1];
-		$leading_space =& $matches[2];
-		$marker_space = $matches[3];
-		$tailing_blank_line =& $matches[5];
+		global $is_google_app_engine;
+		if ($is_google_app_engine) {
+			$item = $matches[2];
+			$leading_line = '';
+			$leading_space =& $matches[2];
+			$marker_space = $matches[3];
+			$tailing_blank_line =& $matches[5];
+		} else {
+			$item = $matches[4];
+			$leading_line =& $matches[1];
+			$leading_space =& $matches[2];
+			$marker_space = $matches[3];
+			$tailing_blank_line =& $matches[5];
+		}
 
-		if ($leading_line || $tailing_blank_line || 
-			preg_match('/\n{2,}/', $item))
+		if ($leading_line || $tailing_blank_line || preg_match('/\n{2,}/', $item))
 		{
 			# Replace marker with the appropriate whitespace indentation
 			$item = $leading_space . str_repeat(' ', strlen($marker_space)) . $item;
@@ -1625,6 +1654,7 @@ class Markdown_Parser {
 
 		return $text;
 	}
+	
 	function _detab_callback($matches) {
 		$line = $matches[0];
 		$strlen = $this->utf8_strlen; # strlen function for UTF-8.
@@ -2454,7 +2484,7 @@ class MarkdownExtra_Parser extends Markdown_Parser {
 	}
 	function _doDefLists_callback($matches) {
 		# Re-usable patterns to match list item bullets and number markers:
-		$list = $matches[1];
+		$list = (isset($matches[1])?$matches[1]:'');
 		
 		# Turn double returns into triple returns, so that we can make a
 		# paragraph for the last item in a list, if necessary:
